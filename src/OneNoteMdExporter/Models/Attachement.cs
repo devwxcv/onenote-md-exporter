@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.IO;
 
 namespace alxnbl.OneNoteMdExporter.Models
@@ -9,7 +9,7 @@ namespace alxnbl.OneNoteMdExporter.Models
 
         public AttachementType Type {get; set;}
 
-        public string FriendlyFileName { 
+        public string FriendlyFileName {
             get { return OneNotePreferredFileName ?? Path.GetFileName(OriginalUserFilePath); }
         }
         /// <summary>

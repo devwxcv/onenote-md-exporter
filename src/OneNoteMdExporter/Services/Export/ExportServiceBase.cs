@@ -277,6 +277,11 @@ namespace alxnbl.OneNoteMdExporter.Services.Export
             /// Add horizontal bar before text blocks
             AddHorizontalBarBeforeTextblocks(xmlPageContent, ns);
 
+            /// Convert <one:T> without CDATA whose content starts with em-spaces (e.g. mails
+            /// imported into OneNote) into blockquote-prefixed CDATA so Pandoc preserves the
+            /// indentation hierarchy in the Markdown output.
+            ConvertEmspaceToBlockquote(xmlPageContent, ns);
+
             if (AppSettings.UseHtmlStyling) /// Keep HTML highlighting (using span elements)
             {
                 // Escape HTML span elements for style attributes not handled by pandoc / not supported by markdown
@@ -307,8 +312,8 @@ namespace alxnbl.OneNoteMdExporter.Services.Export
             {
                 if (xmlText.FirstNode is not XCData cdataNode)
                 {
-                    // Only log if the tag is one we expect to handle
-                    Log.Warning($"Found T-element but no CDATA-element, with Value: '{xmlText?.Value}'");
+                    // After ConvertEmspaceToBlockquote, this should be rare. Log at Debug level only.
+                    Log.Debug($"EscapeStylingSpan: skipping T-element without CDATA, value='{xmlText?.Value}'");
                     continue;
                 }
                 XCData innerNode = xmlText.FirstNode as XCData;
@@ -340,6 +345,90 @@ namespace alxnbl.OneNoteMdExporter.Services.Export
             }
         }
 
+
+        /// <summary>
+        /// Transforme les éléments <one:T> sans CDATA dont le contenu commence par des espaces
+        /// cadratins (em-spaces) en éléments CDATA avec des préfixes de citation Markdown ("> ").
+        ///
+        /// Ces éléments proviennent principalement de mails importés dans OneNote, où l'indentation
+        /// est encodée avec des entités HTML &amp;emsp; plutôt que par la hiérarchie XML <OEChildren>.
+        /// Sans ce traitement, Pandoc perd l'indentation lors de la conversion DOCX → Markdown.
+        ///
+        /// L'em-space arrive sous deux formes selon son origine :
+        ///   Forme 1 — caractère Unicode   :
+        ///     Le parseur XML décode automatiquement &amp;emsp; en U+2003 lors de la lecture de
+        ///     XElement.Value. Règle de niveau : 1 em-space = 1 niveau de citation.
+        ///   Forme 2 — chaîne littérale "&amp;emsp;" :
+        ///     Produite par ConvertIndentation() qui écrit la valeur via XElement.Value setter ;
+        ///     le '&amp;' est alors échappé en '&amp;amp;' à la sérialisation, et relu comme
+        ///     '&amp;' littéral (non décodé en U+2003). Règle de niveau : EmSpacesPerIndent
+        ///     em-spaces (= 2) = 1 niveau de citation.
+        /// </summary>
+        private static void ConvertEmspaceToBlockquote(XElement xmlPageContent, XNamespace ns)
+        {
+            const char EmSpaceChar = ' ';
+            const string EmSpaceLiteral = "&emsp;";
+
+            foreach (var xmlText in xmlPageContent.Descendants(ns + "T"))
+            {
+                if (xmlText.FirstNode is XCData)
+                    continue; // CDATA présent : élément normal, laissé à EscapeStylingSpan
+
+                var rawValue = xmlText.Value;
+                if (string.IsNullOrEmpty(rawValue))
+                    continue;
+
+                // Identifier la forme de l'em-space
+                bool isUnicodeForm = rawValue[0] == EmSpaceChar;
+                bool isLiteralForm = !isUnicodeForm && rawValue.StartsWith(EmSpaceLiteral);
+                if (!isUnicodeForm && !isLiteralForm)
+                    continue;
+
+                // Compter les em-spaces consécutifs en tête et extraire le texte restant
+                int emspaceCount = 0;
+                int pos = 0;
+                if (isUnicodeForm)
+                {
+                    while (pos < rawValue.Length && rawValue[pos] == EmSpaceChar)
+                    {
+                        emspaceCount++;
+                        pos++;
+                    }
+                }
+                else
+                {
+                    while (pos + EmSpaceLiteral.Length <= rawValue.Length
+                           && rawValue.Substring(pos, EmSpaceLiteral.Length) == EmSpaceLiteral)
+                    {
+                        emspaceCount++;
+                        pos += EmSpaceLiteral.Length;
+                    }
+                }
+
+                var textContent = rawValue.Substring(pos);
+
+                // Calcul du niveau de citation
+                // Forme Unicode : 1 em-space = 1 niveau (mails importés)
+                // Forme littérale : EmSpacesPerIndent em-spaces = 1 niveau (ConvertIndentation)
+                int indentLevel = isUnicodeForm
+                    ? emspaceCount
+                    : Math.Max(1, emspaceCount / EmSpacesPerIndent);
+
+                // Ligne composée uniquement d'em-spaces (séparateur visuel dans le mail d'origine) :
+                // on insère un espace insécable pour que Pandoc émette une ligne de citation non vide.
+                bool isEmptyLine = string.IsNullOrWhiteSpace(textContent);
+                if (isEmptyLine)
+                    textContent = " ";
+
+                var prefix = string.Concat(Enumerable.Repeat("> ", indentLevel));
+                var cdataContent = prefix + textContent;
+
+                Log.Debug($"ConvertEmspaceToBlockquote: forme={(isUnicodeForm ? "unicode" : "literal")}, " +
+                          $"niveau={indentLevel}, vide={isEmptyLine}, texte='{textContent.Left(60)}'");
+
+                xmlText.ReplaceNodes(new XCData(cdataContent));
+            }
+        }
 
         private static readonly string HorizontalBar = "---" + Environment.NewLine + Environment.NewLine;
         private void AddHorizontalBarBeforeTextblocks(XElement xmlPageContent, XNamespace ns)
@@ -535,7 +624,22 @@ namespace alxnbl.OneNoteMdExporter.Services.Export
                     //File.SetAttributes(exportFilePath, FileAttributes.Normal); // Prevent exception during removing of export directory
 
                     // Update page markdown to insert md references to attachments
-                    InsertPageMdAttachmentReference(ref pageMdFileContent, attach, GetAttachmentMdReference);
+                    var placeholderReplaced = InsertPageMdAttachmentReference(ref pageMdFileContent, attach, GetAttachmentMdReference);
+
+                    // Fallback: if no placeholder was found (e.g. Pandoc used a different encoding or
+                    // the filename couldn't be matched), append the link at the end of the page
+                    if (!placeholderReplaced)
+                    {
+                        var friendlyName = attach.FriendlyFileName;
+                        var ext = Path.GetExtension(friendlyName ?? "");
+                        var nameWithoutExt = Path.GetFileNameWithoutExtension(friendlyName ?? "");
+                        if (!string.IsNullOrEmpty(ext) &&
+                            Path.GetExtension(nameWithoutExt).Equals(ext, StringComparison.OrdinalIgnoreCase))
+                            nameWithoutExt = Path.GetFileNameWithoutExtension(nameWithoutExt);
+                        var label = !string.IsNullOrEmpty(friendlyName) ? (nameWithoutExt + ext) : Path.GetFileName(GetAttachmentFilePath(attach));
+                        var attachMdRef = GetAttachmentMdReference(attach);
+                        pageMdFileContent += $"\n[{label}]({attachMdRef})\n";
+                    }
                 }
 
                 FinalizeExportPageAttachments(page, attach);
@@ -552,22 +656,63 @@ namespace alxnbl.OneNoteMdExporter.Services.Export
 
 
         /// <summary>
-        /// Replace the tag <<FileName>> generated by OneNote by a markdown link referencing the attachment
+        /// Replace the tag <<FileName>> generated by OneNote by a markdown link referencing the attachment.
+        /// Returns true if at least one placeholder was replaced.
         /// </summary>
-        /// <param name="pageMdFileContent"></param>
-        /// <param name="attach"></param>
-        private static void InsertPageMdAttachmentReference(ref string pageMdFileContent, Attachement attach, Func<Attachement, string> getAttachMdReferenceMethod)
+        private static bool InsertPageMdAttachmentReference(ref string pageMdFileContent, Attachement attach, Func<Attachement, string> getAttachMdReferenceMethod)
         {
-            var pageMdFileContentModified = Regex.Replace(pageMdFileContent, "(\\\\<){2}(?<fileName>.*)(\\\\>){2}", delegate (Match match)
+            var replaced = false;
+
+            // Match all forms Pandoc can produce for <<filename>>:
+            //   \<\<filename\>\>  — backslash-escaped (inline text)
+            //   <<filename>>      — unescaped
+            //   &lt;&lt;filename&gt;&gt; — HTML entity-encoded (inside HTML table cells)
+            // Capture in a local variable: C# forbids access to ref parameters inside delegates
+            var originalContent = pageMdFileContent;
+
+            var pageMdFileContentModified = Regex.Replace(pageMdFileContent, @"(?:\\<|<|&lt;){2}(?<fileName>.*?)(?:\\>|>|&gt;){2}", delegate (Match match)
             {
                 var refFileName = match.Groups["fileName"]?.Value ?? "";
-                var attachOriginalFileName = attach.OneNotePreferredFileName;
+
+                // Unescape any backslash-escaped characters Pandoc may have added inside the filename
+                // e.g. "rapport\_Q1 2024\.xlsx" → "rapport_Q1 2024.xlsx"
+                refFileName = Regex.Replace(refFileName, @"\\(.)", "$1");
+
                 var attachMdRef = getAttachMdReferenceMethod(attach);
 
-                if (refFileName.Equals(attachOriginalFileName))
+                // Use FriendlyFileName for comparison: falls back to OriginalUserFilePath filename
+                // when OneNotePreferredFileName is null (attachments without preferredName in XML)
+                if (refFileName.Equals(attach.FriendlyFileName, StringComparison.OrdinalIgnoreCase))
                 {
-                    // reference found is corresponding to the attachment being processed
-                    return $"[{attachOriginalFileName}]({attachMdRef})";
+                    replaced = true;
+
+                    // Build label from FriendlyFileName, normalizing to single extension
+                    // (e.g. "File1.pdf.pdf" → "File1.pdf" when OneNote duplicates the extension)
+                    var friendlyName = attach.FriendlyFileName;
+                    var ext = Path.GetExtension(friendlyName);
+                    var nameWithoutExt = Path.GetFileNameWithoutExtension(friendlyName);
+                    if (!string.IsNullOrEmpty(ext) &&
+                        Path.GetExtension(nameWithoutExt).Equals(ext, StringComparison.OrdinalIgnoreCase))
+                        nameWithoutExt = Path.GetFileNameWithoutExtension(nameWithoutExt);
+                    var label = nameWithoutExt + ext;
+
+                    // If the placeholder was HTML-entity encoded (&lt;&lt;...&gt;&gt;), we are inside
+                    // an HTML table cell. Markdown link syntax is not processed inside raw HTML blocks,
+                    // so output an HTML anchor tag to keep the link clickable.
+                    if (match.Value.StartsWith("&lt;"))
+                        return $"<a href=\"{attachMdRef}\">{label}</a>";
+
+                    // Don't add a newline when the match is inside a pipe-table row (a line containing '|'):
+                    // adding '\n' inside a pipe-table cell breaks the table structure and splits
+                    // "[text]" and "(url)" into separate display elements.
+                    var lineStart = originalContent.LastIndexOf('\n', match.Index < 1 ? 0 : match.Index - 1);
+                    var lineEnd = originalContent.IndexOf('\n', match.Index);
+                    var line = originalContent.Substring(
+                        lineStart + 1,
+                        (lineEnd >= 0 ? lineEnd : originalContent.Length) - (lineStart + 1));
+                    var suffix = line.Contains('|') ? "" : "\n";
+
+                    return $"[{label}]({attachMdRef}){suffix}";
                 }
                 else
                 {
@@ -577,6 +722,7 @@ namespace alxnbl.OneNoteMdExporter.Services.Export
             });
 
             pageMdFileContent = pageMdFileContentModified;
+            return replaced;
         }
 
 

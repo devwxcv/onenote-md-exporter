@@ -36,10 +36,23 @@ namespace alxnbl.OneNoteMdExporter.Services.Export
         /// <param name="oneNoteFilePath">Original file path of the file in OneNote</param>
         /// <returns></returns>
         protected override string GetAttachmentFilePath(Attachement attachment)
-            => Path.Combine(GetResourceFolderPath(attachment.ParentPage), attachment.Id + Path.GetExtension(attachment.FriendlyFileName));
+        {
+            if (attachment.OverrideExportFilePath == null)
+            {
+                // Binary filename uses attach.Id so Joplin can locate it during import.
+                // Joplin requires resource IDs to be 32-char hex UUIDs and names the imported
+                // file after that ID — there is no way to override this from the export side.
+                var extension = Path.GetExtension(attachment.FriendlyFileName ?? "");
+                return Path.Combine(GetResourceFolderPath(attachment.ParentPage), attachment.Id + extension);
+            }
+            else
+                return attachment.OverrideExportFilePath;
+        }
 
         protected override string GetAttachmentMdReference(Attachement attachment)
-            => $":/{attachment.Id}";
+        {
+            return $":/{attachment.Id}";
+        }
 
         /// <summary>
         /// Path of the joplin md file created in the export folder
@@ -160,23 +173,24 @@ namespace alxnbl.OneNoteMdExporter.Services.Export
 
         private string GetJoplinAttachmentMetadata(Attachement attach)
         {
-
             var exportFilePath = GetAttachmentFilePath(attach);
-            var exportFileName = Path.GetFileName(exportFilePath);
+            var humanReadableName = attach.FriendlyFileName ?? Path.GetFileName(exportFilePath);
+            var extension = Path.GetExtension(humanReadableName);
 
             var sb = new StringBuilder();
-            sb.Append($"{exportFileName}\n");
+            sb.Append($"{humanReadableName}\n");
 
             var data = new Dictionary<string, string>
             {
+                // 32-char UUID required by Joplin — non-conforming IDs are replaced during import
                 ["id"] = attach.Id,
                 ["mime"] = MimeTypes.GetMimeType(exportFilePath),
-                ["filename"] = attach.FriendlyFileName,
+                ["filename"] = humanReadableName,
                 ["updated_time"] = attach.ParentPage.LastModificationDate.ToString("s"),
                 ["user_updated_time"] = attach.ParentPage.LastModificationDate.ToString("s"),
                 ["created_time"] = attach.ParentPage.CreationDate.ToString("s"),
                 ["user_created_time"] = attach.ParentPage.CreationDate.ToString("s"),
-                ["file_extension"] = Path.GetExtension(exportFilePath).Replace(".", ""),
+                ["file_extension"] = extension.Replace(".", ""),
                 ["encryption_cipher_text"] = "",
                 ["encryption_applied"] = "0",
                 ["encryption_blob_encrypted"] = "0",
@@ -270,7 +284,6 @@ namespace alxnbl.OneNoteMdExporter.Services.Export
 
         protected override void FinalizeExportPageAttachments(Page page, Attachement attachment)
         {
-            // Create joplin md file for the attachment
             File.WriteAllText(GetJoplinAttachmentMdFilePath(page, attachment.Id), GetJoplinAttachmentMetadata(attachment));
         }
 

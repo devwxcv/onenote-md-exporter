@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.IO;
 
 namespace alxnbl.OneNoteMdExporter.Helpers
@@ -25,6 +25,6 @@ namespace alxnbl.OneNoteMdExporter.Helpers
 
         public static string Left(this String input, int length)
          => (input.Length < length) ? input : input[..length];
-        
+
     }
 }
