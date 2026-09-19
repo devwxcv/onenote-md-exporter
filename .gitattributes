@@ -1,3 +1,4 @@
 src/OneNoteMdExporter/pandoc/* linguist-vendored
 
 
+*.zip binary

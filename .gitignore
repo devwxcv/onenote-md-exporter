@@ -349,3 +349,6 @@ MigrationBackup/
 # Ionide (cross platform F# VS Code tools) working folder
 .ionide/
 /src/alxnbl.OneNoteMdExporter/Properties/launchSettings.json
+
+# Local release bundles (published as GitHub Release assets, not versioned)
+/releases/

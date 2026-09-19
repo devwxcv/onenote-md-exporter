@@ -14,8 +14,8 @@ The tool is easy to install and use, and can produce better results than other O
 
 # Getting started
 
-1. Download the last release of OneNoteMdExporter from the [Releases page](https://github.com/alxnbl/onenote-md-exporter/releases)
-2. Extract the content of the Zip archive
+1. Download the last release of OneNoteMdExporter (current version: **1.6.1**) from the [Releases page](https://github.com/devwxcv/onenote-md-exporter/releases) : [OneNoteMdExporter.v1.6.1.zip](https://github.com/devwxcv/onenote-md-exporter/releases/download/v1.6.1/OneNoteMdExporter.v1.6.1.zip)
+2. Extract the content of the Zip archive. It is self-contained : the exporter, its `appSettings.json`, the translation files and `pandoc.exe` are all included, so no additional download or install is required.
 3. Launch OneNote and be sure that notebooks to export are loaded
 4. Export your notebooks :
    * Start `OneNoteMdExporter.exe`
@@ -132,7 +132,7 @@ Pandoc is released under the following licence terms, full licence details can b
 
 # Build sources
 
-* Install DotNet 10 : https://dotnet.microsoft.com/download/dotnet/8.0
+* Install DotNet 10 : https://dotnet.microsoft.com/download/dotnet/10.0
 * Clone this repository
 * Extract `pandoc.exe` from `pandoc-<Version>-windows-x86_64.zip` from `/src/OneNoteMdExporter/pandoc/` folder
 * Build using Visual Studio 2019 or MSBUILD.exe (`dotnet build` do not currently support COMReference : https://aka.ms/msbuild/MSB4803) 
